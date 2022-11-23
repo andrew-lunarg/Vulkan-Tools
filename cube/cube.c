@@ -681,20 +681,25 @@ static void demo_flush_init_cmd(struct demo *demo) {
 }
 
 static void demo_set_image_layout(struct demo *demo, VkImage image, VkImageAspectFlags aspectMask, VkImageLayout old_image_layout,
-                                  VkImageLayout new_image_layout, VkAccessFlagBits srcAccessMask, VkPipelineStageFlags src_stages,
+                                  VkImageLayout new_image_layout,
+                                  // Change:
+                                  VkAccessFlagBits srcAccessMask, VkPipelineStageFlags src_stages,
                                   VkPipelineStageFlags dest_stages) {
     assert(demo->cmd);
 
-    VkImageMemoryBarrier image_memory_barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                 .pNext = NULL,
-                                                 .srcAccessMask = srcAccessMask,
-                                                 .dstAccessMask = 0,
-                                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                                 .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                                 .oldLayout = old_image_layout,
-                                                 .newLayout = new_image_layout,
-                                                 .image = image,
-                                                 .subresourceRange = {aspectMask, 0, 1, 0, 1}};
+    VkImageMemoryBarrier2 image_memory_barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                                  .pNext = NULL,
+                                                  .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT |
+                                                                  VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT |
+                                                                  VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT,
+                                                  .srcAccessMask = srcAccessMask | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT,
+                                                  .dstStageMask = dest_stages | VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT,
+                                                  .oldLayout = old_image_layout,
+                                                  .newLayout = new_image_layout,
+                                                  .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                  .image = image,
+                                                  .subresourceRange = {aspectMask, 0, 1, 0, 1}};
 
     switch (new_image_layout) {
         case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
@@ -727,9 +732,22 @@ static void demo_set_image_layout(struct demo *demo, VkImage image, VkImageAspec
             break;
     }
 
-    VkImageMemoryBarrier *pmemory_barrier = &image_memory_barrier;
+    image_memory_barrier.dstAccessMask |= VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
 
-    vkCmdPipelineBarrier(demo->cmd, src_stages, dest_stages, 0, 0, NULL, 0, NULL, 1, pmemory_barrier);
+    VkDependencyInfo dependencyInfo = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                       .pNext = NULL,
+                                       .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+                                       .memoryBarrierCount = 0,
+                                       .bufferMemoryBarrierCount = 0,
+                                       .pBufferMemoryBarriers = NULL,
+                                       .imageMemoryBarrierCount = 1,
+                                       .pImageMemoryBarriers = &image_memory_barrier};
+
+    // src_stages, dest_stages, 0, 0, NULL, 0, NULL, 1, pmemory_barrier
+
+    // VkImageMemoryBarrier2 *pmemory_barrier = &image_memory_barrier;
+
+    vkCmdPipelineBarrier2(demo->cmd, &dependencyInfo);
 }
 
 static void demo_draw_build_cmd(struct demo *demo, VkCommandBuffer cmd_buf) {
@@ -1689,15 +1707,24 @@ static void demo_destroy_texture(struct demo *demo, struct texture_object *tex_o
 
 static void demo_prepare_textures(struct demo *demo) {
     const VkFormat tex_format = VK_FORMAT_R8G8B8A8_UNORM;
-    VkFormatProperties props;
+    // VkFormatProperties props;
     uint32_t i;
 
-    vkGetPhysicalDeviceFormatProperties(demo->gpu, tex_format, &props);
+    // vkGetPhysicalDeviceFormatProperties(demo->gpu, tex_format, &props);
+
+    VkFormatProperties2 props2;
+    VkFormatProperties3 props3;
+    props2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+    props2.pNext = &props3;
+    props3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+    props3.pNext = NULL;
+
+    vkGetPhysicalDeviceFormatProperties2(demo->gpu, tex_format, &props2);
 
     for (i = 0; i < DEMO_TEXTURE_COUNT; i++) {
         VkResult U_ASSERT_ONLY err;
 
-        if ((props.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && !demo->use_staging_buffer) {
+        if ((props2.formatProperties.linearTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && !demo->use_staging_buffer) {
             /* Device can texture using linear textures */
             demo_prepare_texture_image(demo, tex_files[i], &demo->textures[i], VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_SAMPLED_BIT,
                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -1707,7 +1734,7 @@ static void demo_prepare_textures(struct demo *demo) {
                                   demo->textures[i].imageLayout, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
             demo->staging_texture.image = 0;
-        } else if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) {
+        } else if (props2.formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) {
             /* Must use staging buffer to copy linear texture to optimized */
 
             memset(&demo->staging_texture, 0, sizeof(demo->staging_texture));
